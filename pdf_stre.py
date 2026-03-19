@@ -2,73 +2,76 @@ import streamlit as st
 import re
 import pytesseract
 from pdf2image import convert_from_path
-import io
 import os
 
-# --- NOTA: YA NO HAY RUTAS DE C:\ ---
-# Gracias al archivo packages.txt, la nube encontrará los programas solos.
+# --- INTERFAZ WEB ---
+st.set_page_config(page_title="PDF Smart Renamer", page_icon="📄")
+st.title("🚀 Procesador de PDFs (Windows & Mac)")
+st.write("Sube tus archivos y el sistema los renombrará automáticamente.")
 
-st.title("📄 Procesador de PDFs")
-st.write("Sube el archivo para renombrarlo automáticamente.")
-
-def limpiar_nombre_final(texto):
-    texto = texto.replace("/", "-")
+# --- LÓGICA DE LIMPIEZA ---
+def limpiar_ubicacion_estricto(texto):
+    # 1. Quitar saltos de línea
+    texto = texto.replace("\n", " ").replace("\r", " ")
+    
+    # 2. FRENO DE MANO: Cortar si aparecen estas palabras
+    palabras_freno = [r'\bArea\b', r'\bStatus\b', r'\bNotes?\b', r'\bWork\b', r'\bDate\b']
+    
+    for palabra in palabras_freno:
+        corte = re.split(palabra, texto, flags=re.IGNORECASE)
+        texto = corte[0]
+    
+    # 3. Limpieza de caracteres prohibidos
     texto = re.sub(r'[\\:*?"<>|]', "", texto)
     return " ".join(texto.split()).strip()
 
-def completar_fecha(fecha_sucia):
-    fecha = fecha_sucia.replace(" ", "").strip()
-    # Si detecta formato 03/20, le pone el 2026
-    if re.match(r'^\d{1,2}[/-]\d{1,2}$', fecha):
-        return f"{fecha}-2026"
-    return fecha
+# --- PROCESAMIENTO ---
+archivo_subido = st.file_uploader("Elige un archivo PDF", type="pdf")
 
-# Interfaz de subida de archivo
-archivo_subido = st.file_uploader("Arrastra tu PDF aquí", type="pdf")
-
-if archivo_subido is not None:
-    try:
-        with st.spinner('Leyendo datos del PDF...'):
-            # Guardamos el archivo temporalmente para que la librería pueda leerlo
-            with open("temp.pdf", "wb") as f:
-                f.write(archivo_subido.getbuffer())
-
-            # --- PROCESO OCR ---
-            # Nota: quitamos el parámetro poppler_path porque en la nube es automático
+if archivo_subido:
+    with st.spinner("Analizando documento..."):
+        # Guardar temporal para procesar
+        with open("temp.pdf", "wb") as f:
+            f.write(archivo_subido.getbuffer())
+        
+        try:
+            # Convertir a imagen (En la nube no lleva poppler_path)
             paginas = convert_from_path("temp.pdf")
             texto_ocr = pytesseract.image_to_string(paginas[0], lang='spa+eng')
-
-            # --- BÚSQUEDA DE DATOS ---
-            match_loc = re.search(r'(?i)(?:Location|Ubicación|Ubicacion)[:\s-]+(.+)', texto_ocr)
-            match_fec = re.search(r'(?i)(?:Date|Fecha)[:\s-]+(.+)', texto_ocr)
-
-            # Procesar Ubicación
-            ubi_raw = match_loc.group(1).strip() if match_loc else "Sin_Ubicacion"
             
-            # Procesar Fecha
-            if match_fec:
-                fec_raw = match_fec.group(1).strip()
-                fecha_procesada = completar_fecha(fec_raw)
+            # --- BUSCADORES ---
+            patron_fec = r'(?i)(?:Work\s*Date(?:\(s\))?|Restoration|Date)[:\s\.]+(\d{1,2}[/-]\d{1,2})'
+            patron_loc = r'(?i)(?:Location|Ubicación|Ubicacion)[:\s-]+(.+)'
+
+            m_fec = re.search(patron_fec, texto_ocr)
+            m_loc = re.search(patron_loc, texto_ocr)
+
+            # Extraer y Limpiar
+            ubi_sucia = m_loc.group(1).strip() if m_loc else "Sin_Ubicacion"
+            ubi_limpia = limpiar_ubicacion_estricto(ubi_sucia)
+            
+            if m_fec:
+                fecha_corta = m_fec.group(1).replace("/", "-")
+                fecha_final = f"{fecha_corta}-2026"
             else:
-                fecha_procesada = "Sin_Fecha"
+                fecha_final = "Sin_Fecha"
 
-            # Nombre final limpio
-            nombre_final = limpiar_nombre_final(f"{ubi_raw} - {fecha_procesada}.pdf")
+            nombre_final = f"{ubi_limpia} - {fecha_final}.pdf"
 
-            st.success("✅ Análisis completado")
-            st.info(f"📍 **Ubicación:** {ubi_raw}\n\n📅 **Fecha:** {fecha_procesada}")
-
-            # Botón de descarga para el usuario
+            # --- RESULTADOS ---
+            st.success("✅ ¡Procesado con éxito!")
+            st.info(f"📍 **Ubicación detectada:** {ubi_limpia}\n\n📅 **Fecha detectada:** {fecha_final}")
+            
+            # Botón de descarga
             with open("temp.pdf", "rb") as f:
                 st.download_button(
-                    label="📥 Descargar PDF con nombre correcto",
+                    label="📥 Descargar PDF Renombrado",
                     data=f,
                     file_name=nombre_final,
                     mime="application/pdf"
                 )
             
-            # Limpiar el archivo temporal
-            os.remove("temp.pdf")
+            os.remove("temp.pdf") # Borrar rastro
 
-    except Exception as e:
-        st.error(f"Hubo un fallo: {e}")
+        except Exception as e:
+            st.error(f"Error técnico: {e}")
